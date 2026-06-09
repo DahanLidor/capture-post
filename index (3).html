@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Capture → Post</title>
+<!--
+  ============================================================================
+  CAPTURE → POST  (POC v3 — real Claude output + debug log)
+  ============================================================================
+  WHAT'S REAL NOW
+    - Capture (photo/video/voice) + GPS stamping        : real
+    - Speech-to-text (browser Web Speech API, voice mode): real WHERE SUPPORTED
+      (Chrome/Android work well; iOS Safari is limited — debug log says so)
+    - Caption generation                                 : REAL Claude call
+      Claude can't read audio, so it reads your PHOTOS + the STYLE SCREENSHOT
+      as images, plus any transcript text, and writes 2 captions.
+    - Debug log (bottom of page)                         : shows every stage
+
+  YOUR API KEY
+    Tap "AI settings", paste an Anthropic key (get one at console.anthropic.com).
+    The key is kept in memory only — it is NOT saved to the repo or the browser.
+    This bring-your-own-key pattern is fine for YOUR OWN testing. For a real
+    product, move the call to a backend so users never see a key.
+
+  RUN IT (mic/camera/GPS need https:// or localhost)
+    GitHub Pages https:// URL in Safari/Chrome — not inside an in-app browser.
+  ============================================================================
+-->
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --ink:#191c20; --muted:#6b7480; --line:#e4e7ec;
+    --accent:#f0452f; --accent-soft:#fdecea; --ok:#1f9d6b;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  .app{max-width:520px;margin:0 auto;min-height:100vh;padding:24px 18px 40px;display:flex;flex-direction:column}
+  .title{font-size:15px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);text-align:center;margin:4px 0 6px}
+  .subtap{text-align:center;margin-bottom:18px}
+  .subtap a{font-size:12px;color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+  .banner{background:var(--accent-soft);border:1px solid var(--accent);color:#9c2a1a;border-radius:12px;padding:11px 14px;font-size:13px;margin-bottom:16px}
+  .hidden{display:none !important}
+
+  .settings{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:16px}
+  .settings label{display:block;font-size:12px;color:var(--muted);margin:8px 0 4px}
+  .settings input{width:100%;background:var(--bg);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:10px 12px;font-size:14px;font-family:var(--mono)}
+  .settings .note{font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5}
+
+  input.name{width:100%;background:var(--card);border:1px solid var(--line);color:var(--ink);border-radius:14px;padding:15px 16px;font-size:17px;text-align:center}
+  input.name::placeholder{color:var(--muted)}
+  input.name:focus{outline:none;border-color:var(--ink)}
+
+  .gps{display:flex;justify-content:center;margin:14px 0 6px}
+  .gps span{font-family:var(--mono);font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .gdot{width:7px;height:7px;border-radius:50%;background:#c2c8d0}
+  .gdot.on{background:var(--ok)}
+
+  .stage{position:relative;margin:10px 0;border-radius:18px;overflow:hidden;background:#0c0e10;aspect-ratio:3/4;display:flex;align-items:center;justify-content:center}
+  .stage video{width:100%;height:100%;object-fit:cover}
+  .stage .placeholder{color:#5a6068;font-size:14px;text-align:center;padding:24px}
+  .flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
+  .flash.go{animation:flash .35s ease-out}
+  @keyframes flash{0%{opacity:.9}100%{opacity:0}}
+
+  .modes{display:flex;justify-content:center;gap:8px;margin:18px 0 14px}
+  .mode{font-size:13px;font-weight:500;color:var(--muted);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:8px 16px;cursor:pointer}
+  .mode.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+
+  .circle-wrap{display:flex;justify-content:center;margin:6px 0 4px}
+  .circle{width:92px;height:92px;border-radius:50%;background:var(--card);border:4px solid var(--ink);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:transform .12s ease, border-color .2s}
+  .circle:active{transform:scale(.94)}
+  .circle .core{width:66px;height:66px;border-radius:50%;background:var(--accent);transition:all .2s ease}
+  .circle.recording{border-color:var(--accent);animation:ring 1.1s ease-in-out infinite}
+  .circle.recording .core{width:30px;height:30px;border-radius:8px}
+  @keyframes ring{0%,100%{box-shadow:0 0 0 0 var(--accent-soft)}50%{box-shadow:0 0 0 10px var(--accent-soft)}}
+  .hint{text-align:center;font-size:13px;color:var(--muted);margin:10px 0 0}
+  .timer{text-align:center;font-family:var(--mono);font-size:13px;color:var(--accent);margin-top:8px;height:16px}
+
+  .strip{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:18px 0 4px;min-height:8px}
+  .thumb{width:46px;height:46px;border-radius:10px;border:1px solid var(--line);background:var(--card);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--muted)}
+  .thumb img{width:100%;height:100%;object-fit:cover}
+
+  .styleref{margin:20px 0 10px;border:1px dashed var(--line);border-radius:14px;padding:14px;background:var(--card);text-align:center}
+  .styleref .lbl{font-size:13px;color:var(--muted)}
+  .styleref .picked{display:flex;align-items:center;gap:10px;justify-content:center;margin-top:8px}
+  .styleref img{width:42px;height:42px;border-radius:8px;object-fit:cover;border:1px solid var(--line)}
+  .link{color:var(--accent);font-weight:500;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+
+  .spacer{flex:1}
+  .done{width:100%;background:var(--ink);color:#fff;border:none;border-radius:14px;padding:17px;font-size:17px;font-weight:600;cursor:pointer;margin-top:18px}
+  .done:disabled{opacity:.35;cursor:not-allowed}
+
+  .processing{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;min-height:50vh}
+  .spinner{width:54px;height:54px;border-radius:50%;border:4px solid var(--line);border-top-color:var(--accent);animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .pmsg{font-size:15px;color:var(--muted);min-height:22px;text-align:center}
+
+  .results h3{font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:center;margin:4px 0 18px;font-weight:600}
+  .draft{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px}
+  .draft .vibe{font-size:12px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
+  .draft .body{font-size:15px;line-height:1.55;white-space:pre-wrap}
+  .draft .copy{margin-top:12px;font-size:13px;color:var(--muted);background:transparent;border:1px solid var(--line);border-radius:10px;padding:7px 14px;cursor:pointer}
+  .restart{width:100%;background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:14px;padding:15px;font-size:15px;font-weight:500;cursor:pointer;margin-top:6px}
+
+  details.debug{margin-top:24px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+  details.debug summary{cursor:pointer;padding:12px 14px;font-size:13px;font-weight:600;color:var(--muted)}
+  details.debug pre{margin:0;padding:0 14px 14px;font-family:var(--mono);font-size:11px;line-height:1.55;color:#475066;white-space:pre-wrap;word-break:break-word;max-height:360px;overflow:auto}
+  .dstage{color:var(--accent);font-weight:600}
+
+  /* ===== in-feed preview (Instagram / Facebook mockup) ===== */
+  .pv-toggle{display:flex;justify-content:center;gap:8px;margin:4px 0 16px}
+  .pv-toggle button{font-size:13px;font-weight:600;border:1px solid var(--line);background:var(--card);color:var(--muted);border-radius:999px;padding:8px 18px;cursor:pointer}
+  .pv-toggle button.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .pv-card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;max-width:420px;margin:0 auto}
+  .pv-head{display:flex;align-items:center;gap:10px;padding:12px 14px}
+  .pv-av{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#f0452f,#f7a072);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:16px;flex:0 0 auto}
+  .pv-user{font-size:14px;font-weight:600}
+  .pv-sub{font-size:12px;color:var(--muted)}
+  .pv-more{margin-left:auto;color:var(--muted);font-size:20px;line-height:1}
+  .carousel{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;scroll-behavior:smooth;-webkit-overflow-scrolling:touch}
+  .carousel::-webkit-scrollbar{display:none}
+  .carousel img{flex:0 0 100%;scroll-snap-align:center;width:100%;aspect-ratio:1/1;object-fit:cover;display:block}
+  .carousel .noimg{flex:0 0 100%;scroll-snap-align:center;aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#2a2f37,#454d59);color:#cfd4db;font-size:14px;padding:24px;text-align:center}
+  .dots{display:flex;justify-content:center;gap:6px;padding:10px 0 2px}
+  .dot2{width:6px;height:6px;border-radius:50%;background:var(--line)}
+  .dot2.on{background:var(--accent)}
+  .pv-actions{display:flex;align-items:center;gap:18px;padding:10px 14px 2px;font-size:22px}
+  .pv-actions .save{margin-left:auto}
+  .pv-likes{padding:2px 14px;font-size:14px;font-weight:600}
+  .pv-caption{padding:4px 14px 14px;font-size:14px;line-height:1.5}
+  .pv-caption .u{font-weight:600;margin-right:6px}
+  .pv-tag{color:#1d6fd6}
+  .pv-card.fb .pv-caption-top{padding:0 14px 10px;font-size:15px;line-height:1.5}
+  .pv-card.fb .pv-fbbar{display:flex;justify-content:space-between;padding:8px 14px;font-size:12px;color:var(--muted)}
+  .pv-card.fb .pv-actions{border-top:1px solid var(--line);margin-top:2px;font-size:14px;justify-content:space-around;gap:0;padding:8px 0;color:var(--muted)}
+  .pv-card.fb .pv-actions span{display:flex;align-items:center;gap:6px;font-weight:600}
+  .pv-disclaim{text-align:center;font-size:11px;color:var(--muted);margin:14px 0}
+
+  /* day map + place tagging */
+  .mapwrap{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:14px}
+  .stop{display:flex;gap:10px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px}
+  .stop .num{width:24px;height:24px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex:0 0 auto}
+  .stop img{width:54px;height:54px;border-radius:8px;object-fit:cover;flex:0 0 auto}
+  .stop .info{min-width:0}
+  .stop .pl{font-weight:600;font-size:14px}
+  .stop .cap{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .loc-tag{display:inline-flex;align-items:center;gap:4px;font-size:13px;color:#1d6fd6;font-weight:600}
+  .place-card{display:flex;gap:10px;align-items:center;margin:0 14px 12px;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--bg)}
+  .place-card .pin{width:34px;height:34px;border-radius:9px;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;font-size:18px;flex:0 0 auto}
+  .place-card .pl{font-weight:600;font-size:14px}
+  .place-card .meta{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="title">Capture → Post</div>
+  <div class="subtap"><a id="toggleSettings">⚙ AI settings</a> &nbsp;·&nbsp; <a id="openMap">🗺️ מפת היום</a></div>
+
+  <div id="settings" class="settings hidden">
+    <label>Anthropic API key (kept in memory only)</label>
+    <input id="apiKey" type="password" placeholder="sk-ant-…" autocomplete="off">
+    <label>Model</label>
+    <input id="model" type="text" value="claude-sonnet-4-6">
+    <label>שפת הפוסט וההקלטה</label>
+    <div class="pv-toggle" style="justify-content:flex-start;margin:4px 0 0">
+      <button id="langHe" class="active" type="button">עברית</button>
+      <button id="langEn" type="button">English</button>
+    </div>
+    <div class="note">קבל מפתח ב‑console.anthropic.com. השאר את שדה המפתח ריק כדי לראות טיוטות לדוגמה. במוצר אמיתי הקריאה הזו עוברת לשרת כך שמשתמשים לא נוגעים במפתח.</div>
+  </div>
+
+  <div id="insecure" class="banner hidden">Mic, camera and GPS are blocked here. Open via <b>http://localhost</b> or an <b>https://</b> URL in Safari/Chrome.</div>
+
+  <!-- SCREEN 1: CAPTURE -->
+  <div id="capture">
+    <input id="postName" class="name" type="text" placeholder="תן שם לפוסט…" dir="auto">
+    <div class="gps"><span><i id="gdot" class="gdot"></i><span id="gtext">מאתר מיקום…</span></span></div>
+
+    <div id="stage" class="stage">
+      <video id="preview" autoplay playsinline muted class="hidden"></video>
+      <div id="placeholder" class="placeholder">בחר מצב למטה, ואז הקש על העיגול</div>
+      <div id="flash" class="flash"></div>
+    </div>
+    <canvas id="canvas" class="hidden"></canvas>
+
+    <div class="modes">
+      <button class="mode active" data-mode="photo">תמונה</button>
+      <button class="mode" data-mode="video">וידאו</button>
+      <button class="mode" data-mode="voice">קול</button>
+    </div>
+
+    <div class="circle-wrap"><div id="circle" class="circle"><div class="core"></div></div></div>
+    <div id="hint" class="hint">הקש כדי לצלם תמונה</div>
+    <div id="timer" class="timer"></div>
+    <div id="strip" class="strip"></div>
+
+    <div class="styleref">
+      <div class="lbl">השאל סגנון — <span id="pickStyle" class="link">הוסף צילום מסך של פוסט שאתה אוהב</span></div>
+      <input id="styleFile" type="file" accept="image/*" class="hidden">
+      <div id="stylePicked" class="picked hidden"><img id="styleImg" alt="style reference"><span id="styleName" style="font-size:13px;color:var(--muted)"></span></div>
+    </div>
+
+    <div class="styleref">
+      <div class="lbl" style="margin-bottom:8px">מה נאמר? (אופציונלי — אם התמלול לא עבד, הקלד כאן)</div>
+      <textarea id="manualText" dir="auto" rows="2" placeholder="לדוגמה: שתינו קפה חם במסעדת By the Way…" style="width:100%;background:var(--bg);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:10px 12px;font-size:14px;font-family:var(--sans);resize:vertical"></textarea>
+    </div>
+
+    <details class="debug" style="margin-top:16px">
+      <summary>🧪 בדיקה: הזרקת קבצים</summary>
+      <div style="padding:0 14px 14px">
+        <p style="font-size:12px;color:var(--muted);margin:6px 0 12px">טען קבצי תמונה ו/או אודיו כדי לבדוק את ה‑pipeline בלי מצלמה/מיקרופון. הטקסט המתומלל יופיע ב‑Debug log למטה.</p>
+        <span id="injImg" class="link">＋ הזרק תמונות</span><input id="injImgFile" type="file" accept="image/*" multiple class="hidden">
+        <span style="margin:0 10px;color:var(--line)">|</span>
+        <span id="injAud" class="link">＋ הזרק אודיו</span><input id="injAudFile" type="file" accept="audio/*,video/*" multiple class="hidden">
+      </div>
+    </details>
+
+    <div class="spacer"></div>
+    <button id="doneBtn" class="done" disabled>סיום</button>
+  </div>
+
+  <!-- SCREEN 2: PROCESSING -->
+  <div id="processing" class="processing hidden">
+    <div class="spinner"></div>
+    <div id="pmsg" class="pmsg"></div>
+  </div>
+
+  <!-- SCREEN 3: RESULTS -->
+  <div id="results" class="results hidden">
+    <h3>שתי גרסאות</h3>
+    <div id="drafts"></div>
+    <button id="addMapBtn" class="done" style="margin-top:4px">📍 הוסף למפת היום שלי</button>
+    <button id="restartBtn" class="restart">פוסט חדש</button>
+  </div>
+
+  <!-- SCREEN 5: CUMULATIVE DAY MAP -->
+  <div id="mapScreen" class="results hidden">
+    <h3>מפת היום שלי</h3>
+    <div id="mapMount"></div>
+    <div id="stopsList"></div>
+    <button id="mapBackBtn" class="restart">→ חזרה</button>
+    <button id="mapClearBtn" class="restart" style="border-color:var(--accent);color:var(--accent)">נקה מפה</button>
+  </div>
+
+  <!-- SCREEN 4: IN-FEED PREVIEW (mockup only) -->
+  <div id="postPreview" class="hidden">
+    <div class="pv-toggle">
+      <button id="igBtn" class="active">Instagram</button>
+      <button id="fbBtn">Facebook</button>
+    </div>
+    <div id="pvMount"></div>
+    <div class="pv-disclaim">תצוגה בלבד — שום דבר לא מועלה ולא מחובר לחשבון.</div>
+    <button id="pvBack" class="restart">→ חזרה לגרסאות</button>
+  </div>
+
+  <!-- DEBUG LOG (persists across screens) -->
+  <details class="debug" open>
+    <summary>Debug log — every pipeline stage</summary>
+    <pre id="debugLog">waiting…</pre>
+  </details>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+let mode="photo", lastFix=null, stream=null;
+let recorder=null, chunks=[], recording=false, tStart=0, tInt=null;
+let events=[], styleRef=null, postName="";
+let recog=null, liveTranscript="";      // Web Speech API
+let outLang="he";                        // "he" | "en"
+let debug=[];
+
+// ---------- debug logging ----------
+function log(stage, data){
+  debug.push({ t:new Date().toLocaleTimeString([], {hour12:false}), stage,
+    data: typeof data === "string" ? data : JSON.stringify(data, null, 2) });
+  render();
+}
+window.__log = log;
+function render(){
+  $("debugLog").innerHTML = debug.map(e =>
+    `[${e.t}] <span class="dstage">${e.stage}</span>\n${escapeHtml(e.data)}`).join("\n\n") || "waiting…";
+}
+const escapeHtml = s => s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+if (!window.isSecureContext){ $("insecure").classList.remove("hidden"); log("CONTEXT","insecure context — capture APIs blocked"); }
+
+// ---------- settings ----------
+$("toggleSettings").addEventListener("click", () => $("settings").classList.toggle("hidden"));
+$("langHe").addEventListener("click", () => { outLang="he"; $("langHe").classList.add("active"); $("langEn").classList.remove("active"); });
+$("langEn").addEventListener("click", () => { outLang="en"; $("langEn").classList.add("active"); $("langHe").classList.remove("active"); });
+
+// ---------- GPS ----------
+if ("geolocation" in navigator){
+  navigator.geolocation.watchPosition(
+    p => { lastFix = { lat:+p.coords.latitude.toFixed(6), lng:+p.coords.longitude.toFixed(6), accuracy:Math.round(p.coords.accuracy) };
+           $("gdot").classList.add("on"); $("gtext").textContent = `${lastFix.lat}, ${lastFix.lng}`; },
+    e => { $("gtext").textContent = "gps unavailable"; log("GPS","error: "+e.message); },
+    { enableHighAccuracy:true, maximumAge:5000, timeout:15000 });
+} else $("gtext").textContent = "gps unsupported";
+
+// ---------- enable Done ----------
+$("postName").addEventListener("input", e => { postName=e.target.value.trim(); refreshDone(); });
+function refreshDone(){ $("doneBtn").disabled = !(postName && events.length); }
+
+// ---------- modes ----------
+document.querySelectorAll(".mode").forEach(b => b.addEventListener("click", async () => {
+  if (recording) return;
+  document.querySelectorAll(".mode").forEach(x => x.classList.remove("active"));
+  b.classList.add("active"); mode=b.dataset.mode;
+  $("hint").textContent = mode==="photo" ? "הקש כדי לצלם תמונה" : mode==="video" ? "הקש כדי להתחיל / לעצור וידאו" : "הקש כדי להתחיל / לעצור הקלטת קול";
+  await setupForMode();
+}));
+async function setupForMode(){
+  stopStream();
+  if (mode==="voice"){ $("preview").classList.add("hidden"); $("placeholder").classList.remove("hidden"); $("placeholder").textContent="מצב קול — הקש על העיגול כדי להקליט"; return; }
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({ video:{facingMode:"environment"}, audio:true });
+    $("preview").srcObject=stream; $("preview").classList.remove("hidden"); $("placeholder").classList.add("hidden");
+  }catch(err){ $("placeholder").classList.remove("hidden"); $("placeholder").textContent="המצלמה לא זמינה: "+err.message; log("CAMERA","error: "+err.message); }
+}
+function stopStream(){ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } }
+
+// ---------- capture circle ----------
+$("circle").addEventListener("click", () => { if(mode==="photo") capturePhoto(); else toggleRecording(); });
+
+function capturePhoto(){
+  if(!stream) return;
+  const v=$("preview"), c=$("canvas"); c.width=v.videoWidth; c.height=v.videoHeight;
+  c.getContext("2d").drawImage(v,0,0);
+  $("flash").classList.remove("go"); void $("flash").offsetWidth; $("flash").classList.add("go");
+  c.toBlob(b => addEvent("photo",{ url:URL.createObjectURL(b), width:c.width, height:c.height, mime:"image/jpeg" }), "image/jpeg", .9);
+}
+
+async function toggleRecording(){
+  if(recording){ recorder.stop(); return; }
+  let src=stream;
+  if(mode==="voice"){
+    try{ src = await navigator.mediaDevices.getUserMedia({audio:true}); }catch(err){ alert("מיקרופון לא זמין: "+err.message); return; }
+  }
+  const mime=pickMime(mode);
+  recorder=new MediaRecorder(src, mime?{mimeType:mime}:undefined); chunks=[];
+  recorder.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
+  recorder.onstop=()=>{
+    const blob=new Blob(chunks,{type:mime||""});
+    if(mode==="voice") src.getTracks().forEach(t=>t.stop());
+    const ev = addEvent(mode,{ url:URL.createObjectURL(blob), bytes:blob.size, mime:blob.type });
+    transcribeEvent(ev, blob);     // Whisper, local, file-based — works on iPhone too
+    setRecUI(false);
+  };
+  recorder.start(); setRecUI(true);
+}
+
+// ---------- transcription via local Whisper (transformers.js) ----------
+async function transcribeEvent(ev, blob){
+  if(!window.sttTranscribe){ log("STT","מנוע התמלול עדיין נטען… (טעינה ראשונה לוקחת רגע)"); 
+    // wait briefly for the module to finish loading, then retry once
+    await new Promise(r=>setTimeout(r,1500));
+    if(!window.sttTranscribe){ log("STT","מנוע התמלול לא זמין עדיין — נסה שוב בעוד רגע"); return; }
+  }
+  ev.transcribing=true; renderStrip();
+  log("STT", `מתמלל (${outLang})…`);
+  try{
+    const text = await window.sttTranscribe(blob, outLang);
+    ev.transcript=(text||"").trim(); ev.transcribing=false; renderStrip();
+    log("STT", ev.transcript ? "transcript: "+ev.transcript : "תמלול ריק (אולי שקט/רעש)");
+  }catch(err){ ev.transcribing=false; renderStrip(); log("STT","שגיאה: "+err.message); }
+}
+function pickMime(m){
+  const v=["video/mp4","video/webm;codecs=vp9,opus","video/webm"], a=["audio/mp4","audio/webm;codecs=opus","audio/webm"];
+  return (m==="video"?v:a).find(t=>window.MediaRecorder&&MediaRecorder.isTypeSupported(t))||"";
+}
+function setRecUI(on){
+  recording=on; $("circle").classList.toggle("recording",on);
+  if(on){ tStart=Date.now(); tInt=setInterval(()=>{ const s=Math.floor((Date.now()-tStart)/1000);
+      $("timer").textContent=`● ${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`; },250);
+  } else { clearInterval(tInt); $("timer").textContent=""; }
+}
+
+// ---------- events ----------
+function addEvent(type, extra){
+  const ev=Object.assign({ type, timestamp:new Date().toISOString(), location: lastFix?{...lastFix}:null }, extra);
+  events.push(ev); renderStrip(); refreshDone();
+  log("CAPTURE", { type:ev.type, time:ev.timestamp, location:ev.location, mime:ev.mime||null, bytes:ev.bytes||null });
+  return ev;
+}
+function renderStrip(){
+  $("strip").innerHTML = events.map(e => {
+    const badge = e.transcribing ? '<span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);color:#fff;font-size:11px">…</span>' : "";
+    return e.type==="photo" ? `<div class="thumb"><img src="${e.url}">${badge}</div>` : `<div class="thumb">${e.type==="video"?"▶":"🎤"}${badge}</div>`;
+  }).join("");
+}
+
+// ---------- TEST: inject files (no camera/mic needed) ----------
+$("injImg").addEventListener("click", () => $("injImgFile").click());
+$("injImgFile").addEventListener("change", e => {
+  [...e.target.files].forEach(f => addEvent("photo",{ url:URL.createObjectURL(f), mime:f.type||"image/jpeg", bytes:f.size }));
+  e.target.value="";
+});
+$("injAud").addEventListener("click", () => $("injAudFile").click());
+$("injAudFile").addEventListener("change", e => {
+  [...e.target.files].forEach(f => { const ev=addEvent(f.type.startsWith("video")?"video":"voice",{ url:URL.createObjectURL(f), mime:f.type, bytes:f.size }); transcribeEvent(ev, f); });
+  e.target.value="";
+});
+
+// ---------- style reference ----------
+$("pickStyle").addEventListener("click", () => $("styleFile").click());
+$("styleFile").addEventListener("change", e => {
+  const f=e.target.files[0]; if(!f) return;
+  if(styleRef) URL.revokeObjectURL(styleRef.url);
+  styleRef={ url:URL.createObjectURL(f), name:f.name, mime:f.type||"image/jpeg" };
+  $("styleImg").src=styleRef.url; $("styleName").textContent=f.name; $("stylePicked").classList.remove("hidden");
+  log("STYLE","screenshot added: "+f.name+" ("+f.type+")");
+});
+
+// ---------- DONE ----------
+$("doneBtn").addEventListener("click", async () => {
+  if(recording){ recorder.stop(); }
+  stopStream(); show("processing");
+  try{ renderResult(await runPipeline()); show("results"); }
+  catch(err){ log("ERROR", err.message); $("pmsg").textContent="משהו נכשל — ראה את ה‑Debug log למטה."; }
+});
+function show(s){ ["capture","processing","results","postPreview","mapScreen"].forEach(x => $(x).classList.toggle("hidden", x!==s)); }
+const wait = ms => new Promise(r=>setTimeout(r,ms));
+
+// ---------- nearby places from GPS (OpenStreetMap Overpass — free, no key) ----------
+function haversine(a, b){
+  const R=6371000, toR=x=>x*Math.PI/180;
+  const dLat=toR(b.lat-a.lat), dLng=toR(b.lng-a.lng);
+  const s=Math.sin(dLat/2)**2 + Math.cos(toR(a.lat))*Math.cos(toR(b.lat))*Math.sin(dLng/2)**2;
+  return Math.round(2*R*Math.asin(Math.sqrt(s)));
+}
+async function fetchNearby(loc){
+  if(!loc) return [];
+  const R = 120; // tight radius — only what's really around you
+  const q = `[out:json][timeout:8];(node["amenity"~"cafe|restaurant|ice_cream|fast_food|bar|pub|bakery"](around:${R},${loc.lat},${loc.lng});way["amenity"~"cafe|restaurant|ice_cream|fast_food|bar|pub|bakery"](around:${R},${loc.lat},${loc.lng}););out tags center 40;`;
+  try{
+    const r = await fetch("https://overpass-api.de/api/interpreter",{ method:"POST", body:"data="+encodeURIComponent(q) });
+    const j = await r.json();
+    const seen = new Set();
+    const list = (j.elements||[]).map(e=>{
+      const c = e.center || e;                       // ways carry a center
+      return {
+        name: e.tags?.["name:he"] || e.tags?.name || e.tags?.["name:en"],
+        type: e.tags?.amenity,
+        dist: (c.lat!=null) ? haversine(loc, {lat:c.lat, lng:c.lon}) : null
+      };
+    }).filter(p=>p.name && !seen.has(p.name) && seen.add(p.name));
+    list.sort((a,b)=>(a.dist??1e9)-(b.dist??1e9));   // closest first
+    return list.slice(0,10);
+  }catch(err){ log("PLACES","lookup failed: "+err.message); return []; }
+}
+
+// ---------- the pipeline ----------
+async function runPipeline(){
+  const ordered = [...events].sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
+  log("TIMELINE", ordered.map((e,i)=>({ "#":i+1, type:e.type, time:e.timestamp, loc:e.location, transcript:e.transcript||undefined })));
+
+  const transcripts = ordered.filter(e=>e.transcript).map(e=>e.transcript);
+  const manual = $("manualText").value.trim();
+  if(manual){ transcripts.push(manual); log("STT","manual text added: "+manual); }
+
+  $("pmsg").textContent = "מאתר מקומות בסביבה…";
+  const gps = ordered.find(e=>e.location)?.location || lastFix;
+  if(gps) log("GPS", `מיקום: ${gps.lat}, ${gps.lng}  ·  דיוק: ±${gps.accuracy||"?"}מ׳`);
+  const nearby = await fetchNearby(gps);
+  log("PLACES", nearby.length ? nearby.map(p=>`${p.name} (${p.type}, ${p.dist!=null?p.dist+"מ׳":"?"})`) : "no nearby places found");
+  lastGps = gps; lastNearby = nearby; lastPlace = nearby[0] || null;
+
+  $("pmsg").textContent = transcripts.length ? "מתמלל אודיו…" : "קורא את התמונות…"; await wait(400);
+
+  const key=$("apiKey").value.trim();
+  if(!key){ log("LLM","no API key → returning mock drafts"); $("pmsg").textContent="כותב שתי טיוטות (לדוגמה)…"; await wait(500); return mockDrafts(ordered, transcripts, nearby, gps); }
+
+  $("pmsg").textContent = "קלוד מנתח תמונה + קול + מיקום…";
+  return await claudeDrafts(key, ordered, transcripts, nearby, gps);
+}
+
+// ---------- REAL Claude call ----------
+async function claudeDrafts(key, ordered, transcripts, nearby, gps){
+  const model=$("model").value.trim()||"claude-sonnet-4-6";
+  const lang=outLang==="he" ? "Hebrew" : "English";
+  const photos = ordered.filter(e=>e.type==="photo").slice(0,4);
+
+  const content=[];
+  let brief = `שם הפוסט (אם ניתן): "${postName}"\nשפת הפלט: ${lang}\nשעה: ${ordered[0]?new Date(ordered[0].timestamp).toLocaleString():""}\n`;
+  if(gps) brief += `מיקום GPS: ${gps.lat}, ${gps.lng}\n`;
+  if(nearby.length) brief += `\nמקומות קרובים למיקום (מ‑OpenStreetMap, ממוין מהקרוב לרחוק) — אם המשתמש לא אמר שם מקום, בחר את הקרוב/סביר ביותר והשלם אותו:\n`+
+    nearby.map(p=>`  - ${p.name} (${p.type}${p.dist!=null?`, ${p.dist}מ׳`:""})`).join("\n");
+  if(transcripts.length) brief += `\n\nמה שהמשתמש אמר (תמלול קולי):\n"${transcripts.join(" ")}"`;
+  else brief += `\n\n(לא נאמר דבר — הסתמך על התמונה והמיקום בלבד.)`;
+  if(photos.length) brief += `\n\nמצורפות ${photos.length} תמונות מהאירוע — תאר מה באמת רואים בהן.`;
+  if(styleRef) brief += `\n\nמצורף צילום מסך של פוסט שאת הסגנון/וייב שלו צריך לחקות (לא להעתיק מילים).`;
+  content.push({ type:"text", text: brief });
+
+  if(styleRef){ const s=await toB64(styleRef.url); content.push({ type:"text", text:"צילום מסך לסגנון:" }); content.push({ type:"image", source:{ type:"base64", media_type:s.media_type, data:s.data } }); }
+  for(const p of photos){ const im=await toB64(p.url); content.push({ type:"image", source:{ type:"base64", media_type:im.media_type, data:im.data } }); }
+
+  content.push({ type:"text", text:
+`החזר JSON בלבד (בלי markdown) במבנה:
+{"knowledge":{"place":"","neighborhood":"","time_of_day":"","in_photo":"","what_was_said":"","details":[],"mood":""},
+"drafts":[{"vibe":"<תווית קצרה>","body":"<כיתוב ב${lang}>"},{"vibe":"","body":""}]}
+חוקים: (1) כתוב את הכיתוב בגוף ראשון מנקודת מבטי ("אני...", לא "${postName} עושה..."). (2) חלץ כמה שיותר ידע מהתמונה+הקול+המיקום, גם אם לא נאמר במפורש. (3) אם לא נאמר שם מקום, השלם אותו מרשימת המקומות הקרובים. (4) היה ספציפי (שמות, טעמים, שכונה, שעה). (5) שתי הטיוטות בסגנון שונה.` });
+
+  const body = { model, max_tokens:1200,
+    system:"אתה כותב את הפוסט של המשתמש בגוף ראשון, מנקודת המבט שלו. מטרה: לחלץ מקסימום ידע קונקרטי מכל המקורות (תמונה, קול, מיקום, שעה) ולשלב אותם לכיתוב אישי ועשיר. אל תתאר את המשתמש בגוף שלישי.",
+    messages:[{ role:"user", content }] };
+
+  log("LLM_REQUEST", { model, user_text:brief, images:[styleRef?"style":null,...photos.map((_,i)=>"photo_"+(i+1))].filter(Boolean) });
+
+  const res = await fetch("https://api.anthropic.com/v1/messages",{
+    method:"POST",
+    headers:{ "x-api-key":key, "anthropic-version":"2023-06-01", "content-type":"application/json", "anthropic-dangerous-direct-browser-access":"true" },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if(!res.ok){ log("LLM_RESPONSE","HTTP "+res.status+"\n"+JSON.stringify(data,null,2)); throw new Error("API "+res.status+" — ראה Debug log"); }
+
+  const raw = (data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
+  log("LLM_RESPONSE", raw);
+
+  try{
+    const parsed = JSON.parse(raw.replace(/```json|```/g,"").trim());
+    log("KNOWLEDGE", parsed.knowledge||{});
+    return { knowledge: parsed.knowledge||null, drafts: (parsed.drafts||[]).slice(0,2) };
+  }catch(err){ log("PARSE","JSON parse failed — מציג טקסט גולמי"); return { knowledge:null, drafts:[{vibe:"פלט גולמי",body:raw}] }; }
+}
+
+// blob/object-url -> base64 (strip data: prefix)
+async function toB64(url){
+  const blob = await (await fetch(url)).blob();
+  return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res({ data:r.result.split(",")[1], media_type:blob.type||"image/jpeg" }); r.onerror=rej; r.readAsDataURL(blob); });
+}
+
+// ---------- mock fallback (first person, uses nearby + transcript) ----------
+function mockDrafts(ordered, transcripts=[], nearby=[], gps=null){
+  const photos=ordered.filter(e=>e.type==="photo").length;
+  const said = transcripts.join(" ").trim();
+  const place = nearby[0]?.name || "";
+  const tag = (postName||"").replace(/\s+/g,"");
+  const knowledge = {
+    place: place || "(לא זוהה — צריך מפתח לניתוח אמיתי)",
+    what_was_said: said || "(אין תמלול)",
+    in_photo: "(דורש מפתח API כדי שקלוד ינתח את התמונה)",
+    nearby_candidates: nearby.map(p=>p.name),
+    gps: gps ? `${gps.lat}, ${gps.lng}` : "(אין)"
+  };
+  const where = place ? ` ב${place}` : "";
+  const drafts = outLang==="he" ? [
+    { vibe:"גוף ראשון, חם", body:`אני כאן${where}${said?` — ${said}`:""}. ${photos? "צילמתי כמה רגעים מהיום הזה. ":""}יש ימים שפשוט רוצים לשמור. ✨${tag?`\n\n#${tag}`:""}` },
+    { vibe:"קצר וקולע", body:`${said||"כאן עכשיו"}${where}. 🔥` }
+  ] : [
+    { vibe:"First person, warm", body:`I'm here${where}${said?` — ${said}`:""}. A day worth keeping. ✨${tag?`\n\n#${tag}`:""}` },
+    { vibe:"Short & punchy", body:`${said||"Right here, right now"}${where}. 🔥` }
+  ];
+  return { knowledge, drafts };
+}
+
+function renderResult(result){
+  const { knowledge, drafts } = result;
+  lastDrafts = drafts;
+  currentCaption = (drafts[0] && drafts[0].body) || "";
+  let kHtml = "";
+  if(knowledge){
+    const rows = Object.entries(knowledge).filter(([k,v])=>v&&(!Array.isArray(v)||v.length))
+      .map(([k,v])=>`<div style="display:flex;gap:8px;font-size:13px;margin:3px 0"><span style="color:var(--muted);min-width:120px">${escapeHtml(k)}</span><span dir="auto">${escapeHtml(Array.isArray(v)?v.join(", "):String(v))}</span></div>`).join("");
+    kHtml = `<div class="draft" style="border-style:dashed"><div class="vibe">הידע שחולץ מכל המקורות</div>${rows}</div>`;
+  }
+  $("drafts").innerHTML = kHtml + drafts.map((d,i)=>`
+    <div class="draft"><div class="vibe">גרסה ${i+1} — ${escapeHtml(d.vibe||"")}</div>
+    <div class="body" id="d${i}" dir="auto">${escapeHtml(d.body||"")}</div>
+    <button class="copy" onclick="copyDraft(${i})">העתק</button>
+    <button class="copy" onclick="openPreview(${i})">תצוגה בפיד</button></div>`).join("");
+}
+window.copyDraft = i => navigator.clipboard?.writeText($("d"+i).textContent);
+
+// ---------- in-feed preview (Instagram / Facebook mockup, no upload) ----------
+let lastDrafts=[], previewIndex=0, platform="instagram";
+let lastGps=null, lastNearby=[], lastPlace=null, currentCaption="";
+const photoUrls = () => events.filter(e=>e.type==="photo").map(e=>e.url);
+function fmtCaption(t){ return escapeHtml(t||"").replace(/(^|\s)([#@][\w\u0590-\u05FF.]+)/g,'$1<span class="pv-tag">$2</span>'); }
+
+window.openPreview = (i) => { previewIndex=i; platform="instagram";
+  $("igBtn").classList.add("active"); $("fbBtn").classList.remove("active"); show("postPreview"); renderPreview(); };
+$("igBtn").addEventListener("click",()=>{ platform="instagram"; $("igBtn").classList.add("active"); $("fbBtn").classList.remove("active"); renderPreview(); });
+$("fbBtn").addEventListener("click",()=>{ platform="facebook"; $("fbBtn").classList.add("active"); $("igBtn").classList.remove("active"); renderPreview(); });
+$("pvBack").addEventListener("click",()=>show("results"));
+
+function renderPreview(){
+  const d = lastDrafts[previewIndex] || { body:"" };
+  const urls = photoUrls();
+  const slides = urls.length ? urls.map(u=>`<img src="${u}">`).join("")
+    : `<div class="noimg">No photos in this session — caption preview only</div>`;
+  const dots = urls.length>1 ? `<div class="dots" id="pvDots">${urls.map((_,i)=>`<span class="dot2 ${i===0?"on":""}"></span>`).join("")}</div>` : "";
+  const cap = fmtCaption(d.body);
+  const handle = postName ? postName.replace(/\s+/g,"").toLowerCase() : "your_handle";
+  const initial = (postName||"Y").trim().charAt(0).toUpperCase();
+  const place = lastPlace; // closest real place from GPS
+  const tagLine = place ? `<div class="loc-tag">📍 ${escapeHtml(place.name)}</div>` : (lastFix?'<div class="pv-sub">בקרבת מקום</div>':'');
+  const placeCard = place ? `<div class="place-card"><div class="pin">📍</div><div><div class="pl">${escapeHtml(place.name)}</div><div class="meta">${escapeHtml(place.type||"")}${place.dist!=null?` · ${place.dist}מ׳ ממך`:""}</div></div></div>` : "";
+
+  let html;
+  if(platform==="instagram"){
+    html = `<div class="pv-card ig">
+      <div class="pv-head"><div class="pv-av">${initial}</div><div><div class="pv-user">${escapeHtml(handle)}</div>${tagLine}</div><div class="pv-more">⋯</div></div>
+      <div class="carousel" id="pvCar">${slides}</div>${dots}
+      <div class="pv-actions"><span>♡</span><span>💬</span><span>➤</span><span class="save">🔖</span></div>
+      <div class="pv-likes">128 לייקים</div>
+      <div class="pv-caption" dir="auto"><span class="u">${escapeHtml(handle)}</span>${cap}</div>
+      ${placeCard}
+    </div>`;
+  } else {
+    html = `<div class="pv-card fb">
+      <div class="pv-head"><div class="pv-av">${initial}</div><div><div class="pv-user">${escapeHtml(handle)}</div><div class="pv-sub">עכשיו · 🌐${place?` · 📍 ${escapeHtml(place.name)}`:""}</div></div><div class="pv-more">⋯</div></div>
+      <div class="pv-caption-top" dir="auto">${cap}</div>
+      <div class="carousel" id="pvCar">${slides}</div>${dots}
+      ${placeCard}
+      <div class="pv-fbbar"><span>👍 ❤️ 128</span><span>14 תגובות</span></div>
+      <div class="pv-actions"><span>👍 אהבתי</span><span>💬 תגובה</span><span>➤ שיתוף</span></div>
+    </div>`;
+  }
+  $("pvMount").innerHTML = html;
+
+  const car = $("pvCar");
+  if(car && urls.length>1){
+    car.addEventListener("scroll", () => {
+      const idx = Math.round(car.scrollLeft / car.clientWidth);
+      document.querySelectorAll("#pvDots .dot2").forEach((dd,k)=>dd.classList.toggle("on", k===idx));
+    });
+  }
+}
+
+$("restartBtn").addEventListener("click", () => {
+  events.forEach(e=>e.url&&URL.revokeObjectURL(e.url)); if(styleRef) URL.revokeObjectURL(styleRef.url);
+  events=[]; styleRef=null; postName=""; liveTranscript="";
+  $("postName").value=""; $("manualText").value=""; $("strip").innerHTML=""; $("timer").textContent=""; $("stylePicked").classList.add("hidden"); $("doneBtn").disabled=true;
+  show("capture"); setupForMode();
+});
+
+setupForMode();
+log("READY","POC נטען. צלם, תן שם לפוסט, ולחץ סיום. תמלול עברית פעיל דרך Whisper מקומי.");
+
+// ============ CUMULATIVE DAY MAP (saved between refreshes via localStorage) ============
+const JKEY = "journey_v1";
+function loadJourney(){ try{ return JSON.parse(localStorage.getItem(JKEY))||[]; }catch(e){ return []; } }
+function saveJourney(j){ try{ localStorage.setItem(JKEY, JSON.stringify(j)); }catch(e){ log("MAP","שמירה נכשלה (אולי מצב פרטי): "+e.message); } }
+
+// downscale a photo to a tiny thumbnail data-URL so localStorage stays small
+async function thumbFrom(url){
+  if(!url) return null;
+  try{
+    const img = await new Promise((res,rej)=>{ const i=new Image(); i.onload=()=>res(i); i.onerror=rej; i.src=url; });
+    const max=160, sc=Math.min(1, max/Math.max(img.width||max, img.height||max));
+    const c=document.createElement("canvas"); c.width=(img.width||max)*sc; c.height=(img.height||max)*sc;
+    c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+    return c.toDataURL("image/jpeg",0.6);
+  }catch(e){ return null; }
+}
+
+$("addMapBtn").addEventListener("click", async () => {
+  const j = loadJourney();
+  const firstPhoto = events.find(e=>e.type==="photo");
+  const thumb = await thumbFrom(firstPhoto?.url);
+  const stop = {
+    id: "stop_"+Date.now(),
+    place: lastPlace?.name || postName || "תחנה",
+    lat: lastGps?.lat ?? null, lng: lastGps?.lng ?? null,
+    caption: currentCaption || "",
+    thumb, time: new Date().toISOString()
+  };
+  j.push(stop); saveJourney(j);
+  log("MAP", `נוספה תחנה: ${stop.place} (${j.length} תחנות במפה)`);
+  renderMap(); show("mapScreen");
+});
+$("openMap").addEventListener("click", () => { renderMap(); show("mapScreen"); });
+$("mapBackBtn").addEventListener("click", () => show("capture"));
+$("mapClearBtn").addEventListener("click", () => { if(confirm("למחוק את כל מפת היום?")){ saveJourney([]); renderMap(); } });
+
+function renderMap(){
+  const j = loadJourney();
+  if(!j.length){ $("mapMount").innerHTML=""; $("stopsList").innerHTML='<div class="empty" style="color:var(--muted);font-size:14px;text-align:center;padding:20px">עוד אין תחנות. צור פוסט ולחץ "הוסף למפת היום שלי".</div>'; return; }
+
+  // normalize coords into an SVG viewport (north up); fall back to a line if no spread
+  const W=480, H=300, pad=46;
+  const pts = j.map(s=>({lat:s.lat, lng:s.lng}));
+  const haveGeo = pts.every(p=>p.lat!=null && p.lng!=null);
+  let xy;
+  if(haveGeo){
+    const lats=pts.map(p=>p.lat), lngs=pts.map(p=>p.lng);
+    let minLa=Math.min(...lats),maxLa=Math.max(...lats),minLo=Math.min(...lngs),maxLo=Math.max(...lngs);
+    const spanLa=(maxLa-minLa)||1e-4, spanLo=(maxLo-minLo)||1e-4;
+    xy = pts.map(p=>({
+      x: pad + ((p.lng-minLo)/spanLo)*(W-2*pad),
+      y: pad + (1-(p.lat-minLa)/spanLa)*(H-2*pad)   // invert: north up
+    }));
+  } else {
+    xy = pts.map((_,i)=>({ x: pad + i*((W-2*pad)/Math.max(1,pts.length-1)), y: H/2 }));
+  }
+  const path = xy.map((p,i)=>(i?"L":"M")+p.x.toFixed(1)+" "+p.y.toFixed(1)).join(" ");
+  const dots = xy.map((p,i)=>`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="13" fill="#f0452f"/><text x="${p.x.toFixed(1)}" y="${(p.y+4).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">${i+1}</text>`).join("");
+  const labels = xy.map((p,i)=>`<text x="${p.x.toFixed(1)}" y="${(p.y-18).toFixed(1)}" text-anchor="middle" font-size="11" fill="#444">${escapeForSvg(j[i].place).slice(0,18)}</text>`).join("");
+  $("mapMount").innerHTML = `<div class="mapwrap"><svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;background:linear-gradient(160deg,#eef2f7,#e4ebf2)">
+    <path d="${path}" fill="none" stroke="#f0452f" stroke-width="3" stroke-dasharray="2 7" stroke-linecap="round" opacity=".7"/>
+    ${labels}${dots}
+  </svg></div>`;
+
+  $("stopsList").innerHTML = j.map((s,i)=>`
+    <div class="stop">
+      <div class="num">${i+1}</div>
+      ${s.thumb?`<img src="${s.thumb}">`:""}
+      <div class="info"><div class="pl" dir="auto">📍 ${escapeHtml(s.place)}</div>
+      <div class="cap" dir="auto">${escapeHtml(s.caption)}</div>
+      <div class="cap">${new Date(s.time).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</div></div>
+    </div>`).join("");
+}
+const escapeForSvg = s => escapeHtml(String(s||""));
+</script>
+
+<!-- Local Whisper (transformers.js) — runs in the browser, no key, transcribes FILES incl. Hebrew, works on iPhone -->
+<script type="module">
+  import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers/+esm";
+  env.allowLocalModels = false;            // fetch model from the HF CDN
+
+  let asr = null, loading = null;
+  const MODEL = "Xenova/whisper-base";     // multilingual (handles Hebrew). Swap to whisper-small for higher accuracy.
+
+  async function getASR(){
+    if (asr) return asr;
+    if (!loading){
+      window.__log && window.__log("STT", "טוען מודל Whisper (פעם אחת, כמה עשרות MB)…");
+      loading = pipeline("automatic-speech-recognition", MODEL, {
+        dtype: "fp32",                       // avoid the broken quantized weights (qdq scale error)
+        progress_callback: (p) => { if (p.status === "progress" && p.file && p.total)
+          window.__log && window.__log("STT", `מוריד ${p.file}: ${Math.round(p.progress)}%`); }
+      }).then(p => { asr = p; window.__log && window.__log("STT","מודל Whisper מוכן."); return p; });
+    }
+    return loading;
+  }
+
+  // decode any audio/video blob -> 16kHz mono Float32Array
+  async function decode(blob){
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AC({ sampleRate: 16000 });
+    const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+    ctx.close();
+    return buf.getChannelData(0);          // first (mono) channel at 16kHz
+  }
+
+  // exposed to the main script
+  window.sttTranscribe = async (blob, lang) => {
+    const t = await getASR();
+    const audio = await decode(blob);
+    const out = await t(audio, {
+      language: lang === "he" ? "hebrew" : "english",
+      task: "transcribe",
+      chunk_length_s: 30, stride_length_s: 5
+    });
+    return (out && out.text) ? out.text : "";
+  };
+
+  // start downloading the model right away so the first transcription is fast
+  getASR().catch(e => window.__log && window.__log("STT","טעינת מודל נכשלה: "+e.message));
+</script>
+</body>
+</html>
