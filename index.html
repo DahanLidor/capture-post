@@ -168,7 +168,12 @@
       <button id="langHe" class="active" type="button">עברית</button>
       <button id="langEn" type="button">English</button>
     </div>
-    <div class="note">קבל מפתח ב‑console.anthropic.com. השאר את שדה המפתח ריק כדי לראות טיוטות לדוגמה. במוצר אמיתי הקריאה הזו עוברת לשרת כך שמשתמשים לא נוגעים במפתח.</div>
+    <label>תמלול קולי אוטומטי (Whisper)</label>
+    <div class="pv-toggle" style="justify-content:flex-start;margin:4px 0 0">
+      <button id="sttOn" type="button">הפעל</button>
+      <button id="sttOff" class="active" type="button">כבוי (מומלץ באייפון)</button>
+    </div>
+    <div class="note">קבל מפתח ב‑console.anthropic.com. השאר את שדה המפתח ריק כדי לראות טיוטות לדוגמה. תמלול אוטומטי כבוי כברירת מחדל כדי שהדף לא יקרוס באייפון — אפשר להפעיל ידנית; בכל מקרה אפשר תמיד להקליד בתיבת "מה נאמר?".</div>
   </div>
 
   <div id="insecure" class="banner hidden">Mic, camera and GPS are blocked here. Open via <b>http://localhost</b> or an <b>https://</b> URL in Safari/Chrome.</div>
@@ -292,6 +297,9 @@ if (!window.isSecureContext){ $("insecure").classList.remove("hidden"); log("CON
 $("toggleSettings").addEventListener("click", () => $("settings").classList.toggle("hidden"));
 $("langHe").addEventListener("click", () => { outLang="he"; $("langHe").classList.add("active"); $("langEn").classList.remove("active"); });
 $("langEn").addEventListener("click", () => { outLang="en"; $("langEn").classList.add("active"); $("langHe").classList.remove("active"); });
+window.sttEnabled = false;
+$("sttOn").addEventListener("click", () => { window.sttEnabled=true; $("sttOn").classList.add("active"); $("sttOff").classList.remove("active"); log("STT","תמלול אוטומטי הופעל — טוען מודל…"); window.sttPreload && window.sttPreload(); });
+$("sttOff").addEventListener("click", () => { window.sttEnabled=false; $("sttOff").classList.add("active"); $("sttOn").classList.remove("active"); log("STT","תמלול אוטומטי כובה"); });
 
 // ---------- GPS ----------
 if ("geolocation" in navigator){
@@ -356,8 +364,8 @@ async function toggleRecording(){
 
 // ---------- transcription via local Whisper (transformers.js) ----------
 async function transcribeEvent(ev, blob){
-  if(!window.sttTranscribe){ log("STT","מנוע התמלול עדיין נטען… (טעינה ראשונה לוקחת רגע)"); 
-    // wait briefly for the module to finish loading, then retry once
+  if(!window.sttEnabled){ log("STT","תמלול אוטומטי כבוי — הקלד בתיבת 'מה נאמר?' (אפשר להפעיל ב‑⚙ AI settings)"); return; }
+  if(!window.sttTranscribe){ log("STT","מנוע התמלול עדיין נטען…"); 
     await new Promise(r=>setTimeout(r,1500));
     if(!window.sttTranscribe){ log("STT","מנוע התמלול לא זמין עדיין — נסה שוב בעוד רגע"); return; }
   }
@@ -719,50 +727,44 @@ function renderMap(){
 const escapeForSvg = s => escapeHtml(String(s||""));
 </script>
 
-<!-- Local Whisper (transformers.js) — runs in the browser, no key, transcribes FILES incl. Hebrew, works on iPhone -->
+<!-- Local Whisper (transformers.js) — OPT-IN, lightweight. Does NOT auto-load (keeps iPhone from running out of memory). -->
 <script type="module">
   import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers/+esm";
-  env.allowLocalModels = false;            // fetch model from the HF CDN
+  env.allowLocalModels = false;
 
   let asr = null, loading = null;
-  const MODEL = "Xenova/whisper-base";     // multilingual (handles Hebrew). Swap to whisper-small for higher accuracy.
+  const MODEL = "Xenova/whisper-base";
 
   async function getASR(){
     if (asr) return asr;
     if (!loading){
-      window.__log && window.__log("STT", "טוען מודל Whisper (פעם אחת, כמה עשרות MB)…");
+      window.__log && window.__log("STT", "טוען מודל Whisper (פעם אחת)…");
       loading = pipeline("automatic-speech-recognition", MODEL, {
-        dtype: "fp32",                       // avoid the broken quantized weights (qdq scale error)
+        dtype: "q8",                         // light on memory (iPhone-safe); avoids the fp32/4-bit problems
         progress_callback: (p) => { if (p.status === "progress" && p.file && p.total)
           window.__log && window.__log("STT", `מוריד ${p.file}: ${Math.round(p.progress)}%`); }
-      }).then(p => { asr = p; window.__log && window.__log("STT","מודל Whisper מוכן."); return p; });
+      }).then(p => { asr = p; window.__log && window.__log("STT","מודל Whisper מוכן."); return p; })
+        .catch(e => { loading=null; window.__log && window.__log("STT","טעינת מודל נכשלה: "+e.message); throw e; });
     }
     return loading;
   }
 
-  // decode any audio/video blob -> 16kHz mono Float32Array
   async function decode(blob){
     const AC = window.AudioContext || window.webkitAudioContext;
     const ctx = new AC({ sampleRate: 16000 });
     const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
     ctx.close();
-    return buf.getChannelData(0);          // first (mono) channel at 16kHz
+    return buf.getChannelData(0);
   }
 
-  // exposed to the main script
   window.sttTranscribe = async (blob, lang) => {
     const t = await getASR();
     const audio = await decode(blob);
-    const out = await t(audio, {
-      language: lang === "he" ? "hebrew" : "english",
-      task: "transcribe",
-      chunk_length_s: 30, stride_length_s: 5
-    });
+    const out = await t(audio, { language: lang === "he" ? "hebrew" : "english", task: "transcribe", chunk_length_s: 30, stride_length_s: 5 });
     return (out && out.text) ? out.text : "";
   };
-
-  // start downloading the model right away so the first transcription is fast
-  getASR().catch(e => window.__log && window.__log("STT","טעינת מודל נכשלה: "+e.message));
+  window.sttPreload = () => getASR().catch(()=>{});   // optional warm-up, only when the user opts in
+  // NOTE: no auto-load here on purpose.
 </script>
 </body>
 </html>
